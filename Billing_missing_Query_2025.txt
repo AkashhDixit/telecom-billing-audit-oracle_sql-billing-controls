@@ -1,0 +1,50 @@
+WITH base_data AS (
+    SELECT
+        logical_id,
+        bill_freq,
+        MIN(bill_period_start_date) AS min_start,
+        MAX(bill_period_end_date) AS max_end
+    FROM billing_cleaned
+    GROUP BY logical_id, bill_freq
+),
+date_series AS (
+    SELECT
+        bd.logical_id,
+        bd.bill_freq,
+        (bd.min_start + (LEVEL - 1) * CASE 
+            WHEN bd.bill_freq = 'Monthly' THEN INTERVAL '1' MONTH
+            WHEN bd.bill_freq = 'Quarterly' THEN INTERVAL '3' MONTH
+            WHEN bd.bill_freq = 'Half-Yearly' THEN INTERVAL '6' MONTH
+            WHEN bd.bill_freq = 'Yearly' THEN INTERVAL '1' YEAR
+        END) AS expected_start
+    FROM base_data bd
+    CONNECT BY LEVEL <=
+        MONTHS_BETWEEN(bd.max_end, bd.min_start) / 
+        CASE 
+            WHEN bd.bill_freq = 'Monthly' THEN 1
+            WHEN bd.bill_freq = 'Quarterly' THEN 3
+            WHEN bd.bill_freq = 'Half-Yearly' THEN 6
+            WHEN bd.bill_freq = 'Yearly' THEN 12
+        END + 1
+    AND PRIOR bd.logical_id = bd.logical_id
+    AND PRIOR dbms_random.value IS NOT NULL
+),
+final_missing AS (
+    SELECT
+        ds.logical_id,
+        ds.bill_freq,
+        ds.expected_start,
+        CASE 
+            WHEN ds.bill_freq = 'Monthly' THEN ADD_MONTHS(ds.expected_start, 1) - 1
+            WHEN ds.bill_freq = 'Quarterly' THEN ADD_MONTHS(ds.expected_start, 3) - 1
+            WHEN ds.bill_freq = 'Half-Yearly' THEN ADD_MONTHS(ds.expected_start, 6) - 1
+            WHEN ds.bill_freq = 'Yearly' THEN ADD_MONTHS(ds.expected_start, 12) - 1
+        END AS expected_end
+    FROM date_series ds
+    LEFT JOIN billing_cleaned bc
+        ON ds.logical_id = bc.logical_id
+       AND ds.expected_start = bc.bill_period_start_date
+    WHERE bc.bill_period_start_date IS NULL
+)
+SELECT * FROM final_missing
+ORDER BY logical_id, expected_start;
